@@ -8,6 +8,8 @@ A minimal Android app to track how many cigarettes you smoke each day.
 - Tap **undo** to remove the last entry
 - Count resets automatically at midnight each day
 - Persists your daily count across app restarts
+- **7-day history** bar chart
+- **Daily goal** — set a max and track progress with a visual indicator
 - Dark, minimal UI
 
 ## Tech Stack
