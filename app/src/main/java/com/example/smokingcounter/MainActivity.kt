@@ -1,6 +1,7 @@
 package com.example.smokingcounter
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -53,8 +54,12 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 
@@ -654,7 +659,8 @@ fun TrendsScreen(goal: Int) {
     var trendData by remember { mutableStateOf(emptyList<HistoryEntry>()) }
     var days by rememberSaveable { mutableIntStateOf(7) }
     var windowOffset by rememberSaveable { mutableIntStateOf(0) }
-    var dragTranslation by remember { mutableFloatStateOf(0f) }
+    val dragTranslation = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
     var selectedEntry by remember { mutableStateOf<HistoryEntry?>(null) }
     val screenWidthPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
 
@@ -689,25 +695,7 @@ fun TrendsScreen(goal: Int) {
             .fillMaxSize()
             .background(BackgroundColor)
             .systemBarsPadding()
-            .padding(top = 40.dp)
-            .pointerInput(days, screenWidthPx) {
-                val pixelsPerDay = screenWidthPx / days
-                var dragAccum = 0f
-                var dragStartOffset = 0
-                detectHorizontalDragGestures(
-                    onDragStart = { dragAccum = 0f; dragStartOffset = windowOffset; dragTranslation = 0f },
-                    onDragEnd = {
-                        val daysDelta = (-dragAccum / pixelsPerDay).roundToInt()
-                        windowOffset = (dragStartOffset + daysDelta).coerceAtLeast(0)
-                        dragTranslation = 0f
-                        dragAccum = 0f
-                    },
-                    onDragCancel = { dragTranslation = 0f; dragAccum = 0f; windowOffset = dragStartOffset }
-                ) { _, amount ->
-                    dragAccum += amount
-                    dragTranslation = dragAccum
-                }
-            },
+            .padding(top = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("trends", color = SubduedColor, fontSize = 11.sp, letterSpacing = 3.sp)
@@ -743,7 +731,7 @@ fun TrendsScreen(goal: Int) {
         Column(
             modifier = Modifier
                 .weight(1f)
-                .graphicsLayer { translationX = dragTranslation },
+                .graphicsLayer { translationX = dragTranslation.value },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(modifier = Modifier.height(20.dp))
@@ -772,7 +760,30 @@ fun TrendsScreen(goal: Int) {
                         .weight(1f)
                         .padding(horizontal = 24.dp)
                         .padding(bottom = 20.dp),
-                    onBarTap = { selectedEntry = it }
+                    onBarTap = { selectedEntry = it },
+                    onDragDelta = { delta ->
+                        scope.launch { dragTranslation.snapTo(dragTranslation.value + delta) }
+                    },
+                    onDragEnd = { dragAccum, startOffset ->
+                        val daysDelta = (-dragAccum / (screenWidthPx / days)).roundToInt()
+                        windowOffset = (startOffset + daysDelta).coerceAtLeast(0)
+                        scope.launch {
+                            dragTranslation.animateTo(
+                                0f,
+                                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                            )
+                        }
+                    },
+                    onDragCancel = { startOffset ->
+                        windowOffset = startOffset
+                        scope.launch {
+                            dragTranslation.animateTo(
+                                0f,
+                                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                            )
+                        }
+                    },
+                    windowOffset = windowOffset
                 )
             }
         }
@@ -792,7 +803,11 @@ private fun TrendsStat(value: String, label: String) {
 fun TrendsLineChart(
     history: List<HistoryEntry>,
     modifier: Modifier = Modifier,
-    onBarTap: ((HistoryEntry) -> Unit)? = null
+    onBarTap: ((HistoryEntry) -> Unit)? = null,
+    windowOffset: Int = 0,
+    onDragDelta: ((Float) -> Unit)? = null,
+    onDragEnd: ((dragAccum: Float, startOffset: Int) -> Unit)? = null,
+    onDragCancel: ((startOffset: Int) -> Unit)? = null
 ) {
     if (history.isEmpty()) return
     val textMeasurer = rememberTextMeasurer()
@@ -809,8 +824,20 @@ fun TrendsLineChart(
     val bottomMarginPx = with(density) { 36.dp.toPx() }
     val topMarginPx = with(density) { 20.dp.toPx() }
 
-    Canvas(modifier = modifier.then(
-        if (onBarTap != null) Modifier.pointerInput(history) {
+    Canvas(modifier = modifier
+        .then(if (onDragDelta != null) Modifier.pointerInput(windowOffset) {
+            var dragAccum = 0f
+            var dragStartOffset = windowOffset
+            detectHorizontalDragGestures(
+                onDragStart = { dragAccum = 0f; dragStartOffset = windowOffset },
+                onDragEnd = { onDragEnd?.invoke(dragAccum, dragStartOffset); dragAccum = 0f },
+                onDragCancel = { onDragCancel?.invoke(dragStartOffset); dragAccum = 0f }
+            ) { _, amount ->
+                dragAccum += amount
+                onDragDelta(amount)
+            }
+        } else Modifier)
+        .then(if (onBarTap != null) Modifier.pointerInput(history) {
             detectTapGestures { offset ->
                 val chartLeft = leftMarginPx
                 val chartRight = size.width.toFloat()
@@ -822,8 +849,8 @@ fun TrendsLineChart(
                     onBarTap(history[i])
                 }
             }
-        } else Modifier
-    )) {
+        } else Modifier)
+    ) {
         val chartLeft = leftMarginPx
         val chartRight = size.width
         val chartBottom = size.height - bottomMarginPx
